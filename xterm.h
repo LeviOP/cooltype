@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #ifndef XTERM_H
 #define XTERM_H
@@ -13,9 +14,9 @@ void disable_alternate_screen() {
     printf("\x1b[?1049l");
 }
 
-void enable_alternate_screen() {
+void enable_alternate_screen(bool disable_at_exit) {
     printf("\x1b[?1049h");
-    atexit(disable_alternate_screen);
+    if (disable_at_exit) atexit(disable_alternate_screen);
 }
 
 void clear_screen() {

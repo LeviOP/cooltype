@@ -21,7 +21,7 @@ void disable_raw_mode() {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
 }
 
-void enable_raw_mode() {
+void enable_raw_mode(bool disable_at_exit) {
     tcgetattr(STDIN_FILENO, &orig_termios);
 
     struct termios raw = orig_termios;
@@ -30,16 +30,8 @@ void enable_raw_mode() {
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 
-    atexit(disable_raw_mode);
+    if (disable_at_exit) atexit(disable_raw_mode);
 }
-
-typedef struct {
-    char c;
-} sky_cell;
-
-sky_cell** last_sky = NULL;
-int skyheight;
-int skywidth;
 
 typedef struct character_node {
     struct character_node* next;
@@ -54,27 +46,34 @@ character_node* head = NULL;
 struct timespec ts;
 struct ttysize tsize;
 
-character_node* create_character(char c, int col) {
-    character_node* character = (character_node*)malloc(sizeof(character_node));
-    clock_gettime(CLOCK_REALTIME, &ts);
+typedef struct {
+    char c;
+} sky_cell;
 
-    character->next = NULL;
+sky_cell** last_sky = NULL;
+int sky_height;
+int sky_width;
+bool sky_dirty = false;
+
+char string[STR_MAX_LEN+1] = "";
+
+void add_character(char c, int col) {
+    clock_gettime(CLOCK_REALTIME, &ts);
+    character_node* character = (character_node*)malloc(sizeof(character_node));
+
+    if (head == NULL) {
+        character->next = NULL;
+    } else {
+        character->next = head;
+        head->prev = character;
+    }
+
     character->prev = NULL;
     character->c = c;
     character->y = 1;
     character->x = col;
     character->dirty_time = TS_TO_MSEC(ts) + DIRTY_DELTA;
 
-    return character;
-}
-
-void add_character(char c, int col) {
-    character_node* character = create_character(c, col);
-
-    if (head != NULL) {
-        character->next = head;
-        head->prev = character;
-    }
     head = character;
 }
 
@@ -95,7 +94,7 @@ void remove_character(character_node* character) {
 }
 
 void advance_character(character_node* character, long time) {
-    if (character->y >= skyheight - 1) {
+    if (character->y >= sky_height - 1) {
         remove_character(character);
     } else {
         character->y++;
@@ -114,12 +113,6 @@ void advance_character(character_node* character, long time) {
     }
 }
 
-void strcat_c(char* str, char c) {
-    for (;*str;str++);
-    *str++ = c;
-    *str++ = 0;
-}
-
 void setup_screen_background() {
     int len = tsize.ts_lines * tsize.ts_cols;
     char output[len + 1];
@@ -132,36 +125,6 @@ void setup_screen_background() {
     fflush(stdout);
 }
 
-char string[STR_MAX_LEN+1] = "";
-bool sky_dirty = false;
-
-// void draw_all() {
-//     int len = strlen(string);
-//     int outputlen = (tsize.ts_lines - 1) * tsize.ts_cols + len;
-//
-//     char output[outputlen + 1];
-//     memset(output, ' ', outputlen * sizeof(char));
-//     output[outputlen] = '\0';
-//
-//     character_node* current = head;
-//     while (current != NULL) {
-//         int index = (current->row - 1) * tsize.ts_cols + current->col;
-//         output[index] = current->c;
-//         current = current->next;
-//     }
-//
-//     for (int i = 0; i < len; i++) {
-//         output[i + (tsize.ts_lines - 1) * tsize.ts_cols] = string[i];
-//     }
-//
-//     hide_cursor();
-//     goto_position(1, 1);
-//     fputs(output, stdout);
-//     show_cursor();
-//     clear_after_cursor();
-//     fflush(stdout);
-// }
-
 void create_sky(sky_cell*** s, int height, int width) {
     *s = (sky_cell**)malloc(height*sizeof(sky_cell*));
     for (int i = 0; i < height; i++) {
@@ -172,16 +135,15 @@ void create_sky(sky_cell*** s, int height, int width) {
     }
 }
 
-void destory_sky(sky_cell*** s, int height, int width) {
+void destory_sky(sky_cell*** s, int height) {
     for (int i = 0; i < height; i++)
         free((*s)[i]);
-
     free(*s);
 }
 
 void draw_sky() {
     sky_cell** sky;
-    create_sky(&sky, skyheight, skywidth);
+    create_sky(&sky, sky_height, sky_width);
 
     for (character_node* current = head; current != NULL; current = current->next) {
         int x = current->x;
@@ -211,35 +173,8 @@ void draw_sky() {
     show_cursor();
     fflush(stdout);
 
-    destory_sky(&last_sky, skyheight, skywidth);
+    destory_sky(&last_sky, sky_height);
     last_sky = sky;
-
-    // for (character_node* current = head; current != NULL; current = current->next) {
-    //     int col = current->col;
-    //     if (col < 1 || col > tsize.ts_cols) continue;
-    //
-    //     goto_position(current->row, col);
-    //     printf("%c", current->c);
-    // }
-
-    // char output[(tsize.ts_lines - 1) * tsize.ts_cols + 1];
-    // memset(output, ' ', ((tsize.ts_lines - 1) * tsize.ts_cols) * sizeof(char));
-    // output[(tsize.ts_lines - 1) * tsize.ts_cols] = '\0';
-    //
-    // for (character_node* current = head; current != NULL; current = current->next) {
-    //     int col = current->col;
-    //     if (col < 1 || col > tsize.ts_cols) continue;
-    //
-    //     int index = (current->row - 1) * tsize.ts_cols + current->col - 1;
-    //     output[index] = current->c;
-    // }
-
-    // hide_cursor();
-    // goto_position(1, 1);
-    // fputs(output, stdout);
-    // goto_position(tsize.ts_lines, strlen(string) + 1);
-    // show_cursor();
-    // fflush(stdout);
 }
 
 void draw_input_line() {
@@ -262,6 +197,12 @@ void delete_word(char* str) {
         str--;
         *str = '\0';
     }
+}
+
+void strcat_c(char* str, char c) {
+    for (;*str;str++);
+    *str++ = c;
+    *str++ = 0;
 }
 
 void read_keys() {
@@ -299,6 +240,7 @@ void process_characters() {
     character_node* current = head;
     while (current != NULL) {
         character_node* next = current->next;
+
         long msec = TS_TO_MSEC(ts);
         if (current->dirty_time < msec) {
             advance_character(current, msec);
@@ -308,40 +250,7 @@ void process_characters() {
     }
 }
 
-// bool render = false;
-//
-// void* start_render_loop() {
-//     struct timespec sleep = {
-//         .tv_sec = 0,
-//         .tv_nsec = 20 * 1000000 // 20ms frametime = 50fps output
-//     };
-//
-//     while (1) {
-//         render = true;
-//         nanosleep(&sleep, NULL);
-//     }
-//
-//     return NULL;
-// }
-
-void updateScreenSize() {
-    struct ttysize new;
-    ioctl(STDIN_FILENO, TIOCGSIZE, &new);
-
-    // Only create a new sky if the old sky was too small
-    if (last_sky == NULL || new.ts_lines > skyheight || new.ts_cols > skywidth) {
-        sky_cell** sky;
-        create_sky(&sky, new.ts_lines, new.ts_cols);
-
-        if (last_sky != NULL) destory_sky(&last_sky, skyheight, skywidth);
-        last_sky = sky;
-
-        skyheight = new.ts_lines;
-        skywidth = new.ts_cols;
-    }
-
-    tsize = new;
-
+void screen_reset() {
     hide_cursor();
 
     setup_screen_background();
@@ -349,19 +258,46 @@ void updateScreenSize() {
     draw_sky();
 }
 
-void init() {
-    srand(time(NULL));
+void updateScreenSize() {
+    ioctl(STDIN_FILENO, TIOCGSIZE, &tsize);
 
-    enable_raw_mode();
-    enable_alternate_screen();
+    // Only create a new sky if the old sky was too small
+    if (tsize.ts_lines > sky_height || tsize.ts_cols > sky_width) {
+        sky_cell** sky;
+        create_sky(&sky, tsize.ts_lines, tsize.ts_cols);
 
-    updateScreenSize();
+        destory_sky(&last_sky, sky_height);
+        last_sky = sky;
 
-    signal(SIGWINCH, updateScreenSize);
+        sky_height = tsize.ts_lines;
+        sky_width = tsize.ts_cols;
+    }
+
+    screen_reset();
+}
+
+void sky_init() {
+    sky_height = tsize.ts_lines;
+    sky_width = tsize.ts_cols;
+
+    create_sky(&last_sky, sky_height, sky_width);
+}
+
+void terminal_init() {
+    enable_raw_mode(true);
+    enable_alternate_screen(true);
+
+    ioctl(STDIN_FILENO, TIOCGSIZE, &tsize);
 }
 
 int main() {
-    init();
+    srand(time(NULL));
+
+    terminal_init();
+    sky_init();
+    screen_reset();
+
+    signal(SIGWINCH, updateScreenSize);
 
     while (1) {
         read_keys();
