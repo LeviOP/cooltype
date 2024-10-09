@@ -7,7 +7,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <sys/ioctl.h>
-#include "xterm.h"
+#include "termcontrol.h"
+#include <signal.h>
 
 #define STR_MAX_LEN 1000
 #define DIRTY_DELTA 100
@@ -45,7 +46,7 @@ typedef struct character_node {
 
 character_node* head = NULL;
 struct timespec ts;
-struct ttysize tsize;
+struct winsize tsize;
 
 struct screen_cell {
     char c;
@@ -100,7 +101,7 @@ void remove_character(character_node* character) {
 }
 
 void advance_character(character_node* character, long time) {
-    if (character->y >= tsize.ts_lines - 1) {
+    if (character->y >= tsize.ws_row - 1) {
         remove_character(character);
     } else {
         character->y++;
@@ -120,7 +121,7 @@ void advance_character(character_node* character, long time) {
 }
 
 void setup_screen_background() {
-    int len = tsize.ts_lines * tsize.ts_cols;
+    int len = tsize.ws_row * tsize.ws_col;
     char output[len + 1];
     memset(output, ' ', len * sizeof(char));
     output[len] = '\0';
@@ -143,7 +144,7 @@ void create_screen(struct screen* s, int height, int width) {
     }
 }
 
-void destory_screen(struct screen* s) {
+void destroy_screen(struct screen* s) {
     for (int i = 0; i < s->height; i++)
         free(s->cells[i]);
     free(s->cells);
@@ -151,26 +152,26 @@ void destory_screen(struct screen* s) {
 
 void draw_screen() {
     struct screen screen;
-    create_screen(&screen, tsize.ts_lines, tsize.ts_cols);
+    create_screen(&screen, tsize.ws_row, tsize.ws_col);
 
     for (character_node* current = head; current != NULL; current = current->next) {
         int x = current->x;
-        if (x < screen_x || x > tsize.ts_cols + screen_x) continue;
+        if (x < screen_x || x > tsize.ws_col + screen_x) continue;
 
         screen.cells[current->y][x - screen_x].c = current->c;
     }
 
     hide_cursor();
 
-    for (int y = 0; y < tsize.ts_lines; y++) {
-        int b = ((double)(tsize.ts_lines - y) / tsize.ts_lines) * 255;
+    for (int y = 0; y < tsize.ws_row; y++) {
+        int b = ((double)(tsize.ws_row - y) / tsize.ws_row) * 255;
 
-        for (int x = 0; x < tsize.ts_cols; x++) {
+        for (int x = 0; x < tsize.ws_col; x++) {
             char c = screen.cells[y][x].c;
 
             if (last_screen.cells[y][x].c == c) continue;
 
-            goto_position(tsize.ts_lines - y, x + 1);
+            goto_position(tsize.ws_row - y, x + 1);
 
             if (c) {
                 set_foreground_color(b, b, b);
@@ -181,17 +182,17 @@ void draw_screen() {
         }
     }
 
-    goto_position(tsize.ts_lines, strlen(string) - screen_x + 1);
+    goto_position(tsize.ws_row, strlen(string) - screen_x + 1);
     show_cursor();
     fflush(stdout);
 
-    destory_screen(&last_screen);
+    destroy_screen(&last_screen);
     last_screen = screen;
 }
 
 void draw_input_line() {
     hide_cursor();
-    goto_position(tsize.ts_lines, 1);
+    goto_position(tsize.ws_row, 1);
     set_foreground_color(255, 255, 255);
     fputs(string+screen_x, stdout);
     show_cursor();
@@ -242,7 +243,7 @@ void read_keys() {
                 add_character(c, len);
                 screen_dirty = true;
             }
-            if (len - screen_x == tsize.ts_cols - SCROLLOFF) {
+            if (len - screen_x == tsize.ws_col - SCROLLOFF) {
                 screen_x++;
                 screen_dirty = true;
             }
@@ -268,25 +269,36 @@ void process_characters() {
     }
 }
 
+void purge_clipped_characters() {
+    character_node* current = head;
+    while (current != NULL) {
+        character_node* next = current->next;
+        if (current->y >= tsize.ws_row - 1) remove_character(current);
+        current = next;
+    }
+}
+
 void screen_reset() {
-    ioctl(STDIN_FILENO, TIOCGSIZE, &tsize);
-    create_screen(&last_screen, tsize.ts_lines, tsize.ts_cols);
+    ioctl(STDIN_FILENO, TIOCGWINSZ, &tsize);
+    create_screen(&last_screen, tsize.ws_row, tsize.ws_col);
 
     hide_cursor();
 
     setup_screen_background();
     draw_input_line();
+    purge_clipped_characters();
     draw_screen();
-}
-
-void updateScreenSize() {
-    destory_screen(&last_screen);
-    screen_reset();
 }
 
 void terminal_init() {
     enable_raw_mode(true);
     enable_alternate_screen(true);
+}
+
+volatile sig_atomic_t screen_size_dirty = false;
+
+void handle_sigwinch() {
+    screen_size_dirty = true;
 }
 
 int main() {
@@ -295,9 +307,14 @@ int main() {
     terminal_init();
     screen_reset();
 
-    signal(SIGWINCH, updateScreenSize);
+    signal(SIGWINCH, handle_sigwinch);
 
     while (1) {
+        if (screen_size_dirty) {
+            destroy_screen(&last_screen);
+            screen_reset();
+            screen_size_dirty = false;
+        }
         read_keys();
         process_characters();
         if (screen_dirty) {
